@@ -1,0 +1,82 @@
+# Career Copilot Lab চালানোর সহজ নিয়ম
+
+এটি Team NO AI-এর local AI Lab prototype। GPT/Gemini API key, MySQL বা paid hosting লাগবে না।
+
+## Windows-এ প্রথমবার
+
+1. পুরো ZIP download করো। ZIP-এর ভেতর থেকে সরাসরি file চালাবে না।
+2. ZIP-এর ওপর right-click → **Extract All** করো।
+3. Python **3.12** install করো। Installer-এ **Add Python to PATH** tick দাও। আগে থাকলে আবার install করার দরকার নেই।
+4. Extract করা `career_copilot_lab` folder খোলো। এখানে `app.py` এবং `START_WINDOWS.bat` থাকবে।
+5. **START_WINDOWS.bat** double-click করো। প্রথমবার internet লাগবে; প্রয়োজনীয় packages install হবে।
+6. Black terminal window খোলা রাখো। প্রথম setup শেষ হতে কয়েক মিনিট লাগতে পারে।
+7. Browser না খুললে address bar-এ `http://localhost:8501` লিখে Enter দাও।
+8. **Create account** tab খোলো। Name, username, email, phone, অন্তত ৮ অক্ষরের password এবং confirm password দাও। Storage consent tick করে **Create account and start** চাপো। Account তৈরি হলে সরাসরি নিজের workspace-এ যাবে।
+9. পরে app খুললে **Sign in** tab-এ username/password দিয়ে ঢোকো।
+10. বাম পাশের **Practice** থেকে task নির্বাচন করো। Code লিখে **Run tests & save attempt** চাপো।
+
+Python-এ শুধু ছোট হাতের `solve` নামের function লিখবে। `input()` বা `print()` নয়, **return** ব্যবহার করবে।
+
+## প্রথম practice: ভুল থেকে সঠিক
+
+1. Practice → **L1 · Sum from 1 to n** নির্বাচন করো।
+2. Task contract, exact function signature এবং একটি public example পড়ো। নিজের code লিখে **Run tests & save attempt** চাপো।
+3. Expected/Actual evidence দেখে logic-এর একটি নির্দিষ্ট অংশ বদলে আবার চেষ্টা করো। একই code আবার submit করলে hint progress বাড়বে না।
+4. তিনটি আলাদা failed approach-এর আগে প্রথম hint পাওয়া যাবে না। Hint 2 ও 3 যথাক্রমে ৫ ও ৭টি distinct failure-এর পরে খুলবে।
+5. Reference solution ৯টি distinct failed approach-এর পরে খুলবে। Hint বা solution দেখলে পরের pass assisted evidence হিসেবে save হবে।
+6. সব test pass হলে recommended next task-এ গিয়ে hint ছাড়া চেষ্টা করো।
+7. **Overview** এবং **History** খোলো। Saved result দেখতে পাবে।
+8. **My skills & CV**-তে `Python, SQL, React`-সহ CV text paste বা PDF/TXT upload করো, **Extract skill keywords**, তারপর **Save skills & CV** চাপো। CV text private local profile-এ save হবে।
+9. **My profile**-এ location, education ও about যোগ করো। একই page-এ saved CV, practice, sign-in, hint, feedback এবং job-analysis activity timeline দেখা যাবে।
+10. Python task evidence দেখাবে। SQL/React এই version-এ **Not assessed** থাকবে।
+11. **Learning roadmap** খুলে adaptive plan দেখাও। Model metrics ও runner rules account-এর আগের main interface-এর **Technical information** section-এ আছে।
+
+## Job Match Analyzer
+
+বাম পাশের **Job Match Analyzer**-এ একটি job description paste করো। চাইলে CV text দাও;
+না দিলে saved skill claims ব্যবহার হবে। এটি local TF-IDF text similarity এবং trained
+skill vocabulary দিয়ে সম্ভাব্য gap দেখায়। ফলাফল hiring decision বা চাকরি পাওয়ার
+সম্ভাবনা নয়। দরকার হলে analysis একটি title দিয়ে save করা যায়; saved roadmap শুধু
+নিজের account-এ দেখা ও delete করা যাবে।
+
+## পরে আবার চালাতে
+
+একই folder-এর `START_WINDOWS.bat` double-click করলেই হবে। Dependencies থাকলে internet লাগে না। আগের account, profile ও history `data/career.db`-তে থাকে। Folder সরালে পুরো folder একসঙ্গে সরাবে। Terminal বন্ধ করলে app বন্ধ হবে, data মুছবে না।
+
+## যদি double-click কাজ না করে
+
+Project folder-এর address bar-এ `cmd` লিখে Enter দাও। একেকটি command একেকবার চালাও:
+
+```bat
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe bootstrap.py
+.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+```
+
+`py` পাওয়া না গেলে প্রথম command-এ `py -3.12`-এর বদলে `python` ব্যবহার করো।
+
+## সাধারণ সমস্যা
+
+- **Python not found:** Python 3.12 install করে PATH option tick করো; নতুন terminal খোলো।
+- **Python version unsupported:** 3.12 ব্যবহার করো। এই project-এর supported versions 3.11-3.13।
+- **Package install failed:** internet connection এবং error message check করো। Screenshot দাও; security setting বন্ধ করবে না।
+- **Port already in use:** আগের app-এর terminal বন্ধ করো, অথবা launch command-এর port `8502` করে `http://localhost:8502` খোলো।
+- **Model version changed:** `RETRAIN_WINDOWS.bat` চালাও; app refresh করো।
+- **Unsupported Python feature:** Main interface-এর **Runner help** পড়ো। `.append()`-এর বদলে `result = result + [n]` ব্যবহার করো।
+- **Step limit reached:** infinite loop অথবা অতিরিক্ত কাজ আছে। Loop-এর variable update হচ্ছে কি না দেখো।
+- **CV scan থেকে skill আসে না:** scanned PDF-এ OCR নেই; text paste করো অথবা manually skill select করো।
+- **Password ভুলে গেলে:** email recovery এই local prototype-এ নেই। নতুন username দিয়ে account খোলা যায়; পুরোনো account-এ প্রবেশ করা যাবে না।
+
+## Testing ও training
+
+- **RUN_TESTS_WINDOWS.bat:** automated test suite চালাবে।
+- **RETRAIN_WINDOWS.bat:** included generated pilot dataset দিয়ে model আবার train করবে।
+- **Model lab:** Account-এর আগের main interface-এ Logistic Regression/SVM test metrics ও evaluation download দেখাবে।
+
+## Submission-এর আগে যা বুঝতে হবে
+
+এই build-এ **নিজেদের training code ও trained classifier আছে**, কিন্তু training data generated এবং pilot-level। এটি real student data নয়। Human review ও independent real data ছাড়া “real-world accuracy” দাবি করবে না।
+
+Code runner শুধুমাত্র basic Python subset support করে। এটি local lab demonstration-এর জন্য। Public link বা internet-facing server হিসেবে deploy করবে না; সেজন্য আলাদা security work প্রয়োজন।
+
+এই code নিজেরা run করে বুঝবে এবং course-এর AI-use policy মেনে assistance disclose করবে। Team-এর তিনজনের নাম এখনো পাওয়া যায়নি; submission-এর আগে README ও app-এর team list-এ নাম যোগ করবে।

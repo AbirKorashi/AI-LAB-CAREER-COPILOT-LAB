@@ -1,0 +1,344 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from core import storage
+from core.tasks import TASKS, TASK_BY_ID
+from core.runner import run_tests, Interpreter, RunnerError
+from core.adaptive import extract_claims, practice_progress, summarize, recommend, roadmap
+from core.model import load_model, predict, LABELS
+from core.job_ml import analyze_job_match, generate_roadmap
+import core.model as model_module
+
+
+class TaskTests(unittest.TestCase):
+    pass
+
+
+def solution_test(task):
+    def test(self):
+        result = run_tests(task['solution'], task)
+        self.assertEqual(result['status'], 'passed', result)
+    return test
+
+
+for item in TASKS:
+    setattr(TaskTests, f"test_reference_{item['id']}", solution_test(item))
+
+
+class RunnerTests(unittest.TestCase):
+    def run_code(self, source):
+        return run_tests(source, TASK_BY_ID['L1'])
+
+    def test_off_by_one(self):
+        r = self.run_code('def solve(n):\n    total = 0\n    for i in range(1, n):\n        total += i\n    return total')
+        self.assertEqual(r['passed'], 1)
+        self.assertEqual(r['status'], 'failed')
+
+    def test_syntax_error(self):
+        self.assertEqual(self.run_code('def solve(n)\n return n')['status'], 'syntax_error')
+
+    def test_missing_function(self):
+        self.assertEqual(self.run_code('def other(n):\n return n')['status'], 'unsupported')
+
+    def test_import_blocked(self):
+        self.assertEqual(self.run_code('import os\ndef solve(n):\n return 0')['status'], 'unsupported')
+
+    def test_attribute_blocked(self):
+        self.assertEqual(self.run_code('def solve(n):\n return n.__class__')['status'], 'unsupported')
+
+    def test_file_access_blocked(self):
+        r = self.run_code('def solve(n):\n return open("secret.txt")')
+        self.assertIn('not allowed', r['cases'][0]['error'])
+
+    def test_eval_blocked(self):
+        self.assertEqual(self.run_code('def solve(n):\n return eval("1+1")')['passed'], 0)
+
+    def test_infinite_loop(self):
+        r = self.run_code('def solve(n):\n while True:\n  pass')
+        self.assertIn('Step limit', r['cases'][0]['error'])
+
+    def test_large_allocation(self):
+        r = self.run_code('def solve(n):\n return [1] * 1000000000')
+        self.assertIn('Collection limit', r['cases'][0]['error'])
+
+    def test_large_range(self):
+        r = self.run_code('def solve(n):\n return list(range(1000000000))')
+        self.assertIn('Collection limit', r['cases'][0]['error'])
+
+    def test_nested_allocation_budget(self):
+        r = self.run_code('def solve(n):\n a=[1]*1000\n b=[a]*1000\n return b')
+        self.assertIn('Step limit', r['cases'][0]['error'])
+
+    def test_recursive_limit(self):
+        r = self.run_code('def solve(n):\n return solve(n)')
+        self.assertIn('depth limit', r['cases'][0]['error'])
+
+    def test_function_arguments(self):
+        r = self.run_code('def solve():\n return 0')
+        self.assertIn('expects', r['cases'][0]['error'])
+
+    def test_helper_function(self):
+        self.assertEqual(Interpreter('def double(n):\n return n*2\ndef solve(n):\n return double(n)').call('solve', [3]), 6)
+
+    def test_list_input_is_copied(self):
+        task = {'function': 'solve', 'tests': [{'args': [[1, 2]], 'expected': 0, 'note': 'Copy'}]}
+        run_tests('def solve(nums):\n nums[0]=99\n return 0', task)
+        self.assertEqual(task['tests'][0]['args'], [[1, 2]])
+
+    def test_bool_is_not_string(self):
+        r = run_tests('def solve(n):\n return "True"', TASK_BY_ID['C2'])
+        self.assertEqual(r['passed'], 0)
+
+    def test_break_continue(self):
+        r = Interpreter('def solve(n):\n total=0\n for i in range(n):\n  if i==1:\n   continue\n  if i==4:\n   break\n  total+=i\n return total').call('solve', [10])
+        self.assertEqual(r, 5)
+
+    def test_power_not_supported(self):
+        self.assertEqual(self.run_code('def solve(n):\n return 10**10000000')['status'], 'unsupported')
+
+
+class StorageTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.old = storage.DB_PATH
+        storage.DB_PATH = Path(self.temp.name) / 'test.db'
+        storage.init_db()
+        self.uid = storage.register('learner', 'Learner', 'testing123')
+
+    def tearDown(self):
+        storage.DB_PATH = self.old
+        try:
+            self.temp.cleanup()
+        except Exception:
+            pass
+
+    def test_register_login(self):
+        self.assertEqual(storage.login('LEARNER', 'testing123')['id'], self.uid)
+        self.assertIsNone(storage.login('learner', 'wrong'))
+
+    def test_login_rejects_username_suffix_instead_of_truncating(self):
+        username = 'a' * 24
+        storage.register(username, 'Long Username', 'testing123')
+        self.assertIsNone(storage.login(username + 'extra', 'testing123'))
+
+    def test_password_not_plaintext(self):
+        with storage.connect() as db:
+            row = db.execute('SELECT * FROM users').fetchone()
+        self.assertNotEqual(row['password_hash'], 'testing123')
+        self.assertEqual(len(row['salt']), 32)
+
+    def test_duplicate_user(self):
+        with self.assertRaises(ValueError):
+            storage.register('learner', 'Another', 'testing123')
+
+    def test_invalid_user(self):
+        with self.assertRaises(ValueError):
+            storage.register("a';DROP", 'Another', 'testing123')
+
+    def test_weak_password(self):
+        with self.assertRaises(ValueError):
+            storage.register('newuser', 'Another', 'short')
+
+    def test_profile_persistence(self):
+        storage.save_profile(self.uid, ['Python', 'SQL'], 'Data analysis foundations',
+                             'Dhaka', 'BSc in CSE', 'Backend learner', 'Python developer CV')
+        saved = storage.profile(self.uid)
+        self.assertEqual(saved['claims'], ['Python', 'SQL'])
+        self.assertEqual(saved['location'], 'Dhaka')
+        self.assertEqual(saved['education'], 'BSc in CSE')
+        self.assertEqual(saved['about'], 'Backend learner')
+        self.assertEqual(saved['cv_text'], 'Python developer CV')
+
+    def test_contact_validation_and_activity_isolation(self):
+        contact_uid = storage.register('contactuser', 'Contact User', 'testing123',
+                                       'USER@example.com', '+880 1700-000000')
+        saved = storage.profile(contact_uid)
+        self.assertEqual(saved['email'], 'user@example.com')
+        self.assertEqual(saved['phone'], '+880 1700-000000')
+        self.assertTrue(any(row['event'] == 'account_created' for row in storage.activity(contact_uid)))
+        self.assertFalse(any(row['details'].endswith('Contact User') for row in storage.activity(self.uid)))
+        with self.assertRaises(ValueError):
+            storage.register('bademail', 'Bad Email', 'testing123', 'not-an-email', '+880 1700-000000')
+        with self.assertRaises(ValueError):
+            storage.register('badphone', 'Bad Phone', 'testing123', 'ok@example.com', 'phone')
+
+    def test_hint_cannot_be_reset(self):
+        storage.assistance(self.uid, 'L1', hints=3, solution=True)
+        result = storage.assistance(self.uid, 'L1', hints=0, solution=False)
+        self.assertEqual(result['hints'], 3)
+        self.assertEqual(result['solution_seen'], 1)
+
+    def test_attempt_isolation_and_feedback(self):
+        other = storage.register('second', 'Another', 'testing123')
+        task = TASK_BY_ID['L1']
+        result = run_tests(task['solution'], task)
+        aid = storage.save_attempt(self.uid, 'L1', task['solution'], result, {'label': 'tests_passed'})
+        self.assertEqual(len(storage.attempts(self.uid)), 1)
+        self.assertEqual(storage.attempts(other), [])
+        with self.assertRaises(ValueError):
+            storage.report_prediction(other, aid, 'Should not be allowed')
+        storage.report_prediction(self.uid, aid, 'My feedback')
+        self.assertEqual(len(storage.export_user(self.uid)['feedback']), 1)
+
+    def test_login_lockout(self):
+        for _ in range(5):
+            self.assertIsNone(storage.login('learner', 'wrong'))
+        with self.assertRaises(ValueError):
+            storage.login('learner', 'testing123')
+
+    def test_register_clears_preexisting_lockout(self):
+        for _ in range(5):
+            self.assertIsNone(storage.login('futureuser', 'wrong'))
+        uid = storage.register('futureuser', 'Future User', 'testing123')
+        self.assertEqual(storage.login('futureuser', 'testing123')['id'], uid)
+
+    def test_rejects_invalid_persistent_data(self):
+        with self.assertRaises(ValueError):
+            storage.save_profile(self.uid, ['Python', 'Python'], 'Python foundations')
+        with self.assertRaises(ValueError):
+            storage.assistance(self.uid, 'missing-task')
+        with self.assertRaises(ValueError):
+            storage.save_attempt(self.uid, 'L1', 'x' * 12001, {}, {})
+        with self.assertRaises(ValueError):
+            storage.save_profile(self.uid, ['Python'], 'Unknown goal')
+
+    def test_corrupt_profile_data_falls_back_safely(self):
+        with storage.connect() as db:
+            db.execute("UPDATE profiles SET claims=?, target=? WHERE user_id=?",
+                       ('{broken', 'Unknown goal', self.uid))
+        saved = storage.profile(self.uid)
+        self.assertEqual(saved['claims'], [])
+        self.assertEqual(saved['target'], 'Python foundations')
+
+    def test_saved_job_validation_and_user_isolation(self):
+        other = storage.register('jobowner', 'Job Owner', 'testing123')
+        roadmap_data = generate_roadmap(['Python'])
+        storage.save_job_analysis(self.uid, 'Backend role', 'Python API role', 42.5,
+                                  ['Python'], roadmap_data)
+        saved = storage.get_saved_jobs(self.uid)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(storage.get_saved_jobs(other), [])
+        with self.assertRaises(ValueError):
+            storage.delete_saved_job(other, saved[0]['id'])
+        with self.assertRaises(ValueError):
+            storage.save_job_analysis(self.uid, '', 'Description', 50, [], [])
+        storage.delete_saved_job(self.uid, saved[0]['id'])
+        self.assertEqual(storage.get_saved_jobs(self.uid), [])
+
+
+class AdaptiveTests(unittest.TestCase):
+    def attempt(self, key, status='passed', hints=0, solution=0):
+        return {'task_id': key, 'result': {'status': status}, 'hints': hints, 'solution_seen': solution}
+
+    def test_claims(self):
+        self.assertEqual(extract_claims('Python, SQL and React'), ['Python', 'SQL', 'React'])
+
+    def test_claim_boundaries(self):
+        self.assertEqual(extract_claims('JavaScript'), ['JavaScript'])
+
+    def test_initial_recommendation(self):
+        self.assertEqual(recommend([])[0]['level'], 1)
+
+    def test_failed_task_goes_easier(self):
+        t, reason = recommend([self.attempt('L5', 'failed')])
+        self.assertEqual(t['topic'], 'Loops')
+        self.assertLess(t['level'], 3)
+
+    def test_passed_task_not_recommended_again(self):
+        self.assertNotEqual(recommend([self.attempt('C1')])[0]['id'], 'C1')
+
+    def test_assisted_not_independent(self):
+        r = summarize([self.attempt('C1', hints=1)])[0]
+        self.assertEqual(r['Tasks passed'], 1)
+        self.assertEqual(r['Independent passes'], 0)
+
+    def test_solution_seen_not_independent(self):
+        self.assertEqual(summarize([self.attempt('C1', solution=1)])[0]['Independent passes'], 0)
+
+    def test_goal_gap(self):
+        r = roadmap([], 'Python backend preparation')
+        self.assertTrue(all(x['Independent evidence level'] == 0 for x in r))
+
+    def test_all_completed(self):
+        t, reason = recommend([self.attempt(t['id']) for t in TASKS])
+        self.assertIn('All 20', reason)
+
+    def test_practice_help_requires_distinct_failed_approaches(self):
+        task = TASK_BY_ID['L1']
+        attempts = [
+            {**self.attempt('L1', 'failed'), 'code': 'attempt one', 'result': {'status': 'failed', 'passed': 1}},
+            {**self.attempt('L1', 'failed'), 'code': 'attempt one', 'result': {'status': 'failed', 'passed': 2}},
+            {**self.attempt('L1', 'failed'), 'code': 'attempt two', 'result': {'status': 'failed', 'passed': 2}},
+        ]
+        progress = practice_progress(attempts, task)
+        self.assertEqual(progress['distinct_failed'], 2)
+        self.assertEqual(progress['unlocked_hints'], 0)
+        attempts.append({**self.attempt('L1', 'failed'), 'code': 'attempt three',
+                         'result': {'status': 'failed', 'passed': 3}})
+        progress = practice_progress(attempts, task)
+        self.assertEqual(progress['unlocked_hints'], 1)
+        self.assertEqual(progress['best_passed'], 3)
+        self.assertFalse(progress['solution_unlocked'])
+
+
+class ModelTests(unittest.TestCase):
+    def test_saved_model_predicts(self):
+        model, error = load_model()
+        self.assertIsNotNone(model, error)
+        source = 'def solve(n):\n total=0\n for i in range(1,n):\n  total+=i\n return total'
+        r = predict(source, run_tests(source, TASK_BY_ID['L1']), model)
+        self.assertIn(r['label'], LABELS + ['uncertain'])
+        self.assertTrue(0 <= r['score'] <= 1)
+
+    def test_pass_does_not_need_model(self):
+        t = TASK_BY_ID['L1']
+        self.assertEqual(predict(t['solution'], run_tests(t['solution'], t), None)['label'], 'tests_passed')
+
+    def test_dataset_families_do_not_leak(self):
+        rows = json.loads((Path(__file__).resolve().parents[1] / 'data/pilot_dataset.json').read_text())
+        split_sets = {s: {r['family'] for r in rows if r['split'] == s} for s in ['train','validation','test']}
+        self.assertFalse(split_sets['train'] & split_sets['test'])
+        self.assertFalse(split_sets['train'] & split_sets['validation'])
+        self.assertFalse(split_sets['test'] & split_sets['validation'])
+        for split in split_sets:
+            self.assertEqual({r['label'] for r in rows if r['split'] == split}, set(LABELS))
+
+    def test_corrupt_model_files_are_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old = model_module.MODEL_DIR
+            model_module.MODEL_DIR = Path(directory)
+            try:
+                (Path(directory) / 'metrics.json').write_text('{broken', encoding='utf-8')
+                model, error = model_module.load_model()
+                self.assertIsNone(model)
+                self.assertIn('metadata', error.lower())
+            finally:
+                model_module.MODEL_DIR = old
+
+    def test_prediction_explains_model_setup_error(self):
+        source = 'def solve(n):\n return 0'
+        result = run_tests(source, TASK_BY_ID['L1'])
+        prediction = predict(source, result, None, 'Model files need rebuilding.')
+        self.assertEqual(prediction['label'], 'model_unavailable')
+        self.assertIn('need rebuilding', prediction['message'])
+
+
+class JobAnalyzerTests(unittest.TestCase):
+    def test_job_match_uses_claims_when_cv_is_blank(self):
+        score, missing = analyze_job_match('', 'Python SQL developer', ['Python'])
+        self.assertGreater(score, 0)
+        self.assertIsInstance(missing, list)
+
+    def test_job_match_rejects_invalid_input(self):
+        with self.assertRaises(ValueError):
+            analyze_job_match(None, 'Python role', [])
+
+    def test_course_search_links_are_encoded(self):
+        roadmap_data = generate_roadmap(['Machine Learning'])
+        self.assertIn('Machine+Learning', roadmap_data[0][1]['links']['Coursera'])
+
+
+if __name__ == '__main__':
+    unittest.main()
